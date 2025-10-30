@@ -73,25 +73,30 @@ TRADING_CONFIG = {
     # 'touch_epsilon_pips': 0.15,
 }
 
-# مدیریت پویا چند مرحله‌ای جدید - 20 مرحله (0.1R تا 20R)
+# مدیریت پویا چند مرحله‌ای جدید - 20 مرحله (پوشش کمیسیون تا 20R)
 # مراحل بر اساس درخواست:
-# 0) 0.1R: SL روی Breakeven (0.0R)، TP ثابت می‌ماند
+# 0) Commission Coverage: وقتی سود از کمیسیون عبور کرد، SL را به نقطه بعد از کمیسیون می‌بریم
 # 1) 2.0R: SL روی +2.0R، TP به 3.0R
 # 2) 3.0R: SL روی +3.0R، TP به 4.0R
 # 3) 4.0R: SL روی +4.0R، TP به 5.0R
 # ... و همینطور تا 20R
 DYNAMIC_RISK_CONFIG = {
     'enable': True,
-    'commission_per_lot': 4.5,          # کمیسیون کل (رفت و برگشت یا فقط رفت؟ طبق بروکر - قابل تنظیم)
+    'commission_per_lot': 4.5,          # کمیسیون کل (رفت و برگشت) به دلار
     'commission_mode': 'per_lot',       # per_lot (کل)، per_side (نیمی از رفت و برگشت) در صورت نیاز توسعه
     'round_trip': False,                # اگر True و per_side باشد دو برابر می‌کند
     'base_tp_R': 2.0,                   # TP اولیه تنظیم‌شده هنگام ورود (برای مرجع)
+    'commission_coverage_stage': {
+        'enable': True,                 # فعال/غیرفعال کردن مرحله پوشش کمیسیون
+        'commission_buffer_R': 0.15,    # بافر اضافی بعد از کمیسیون (مثلاً 15% از 1R)
+        'auto_calculate': True,         # محاسبه خودکار نقطه کمیسیون بر اساس حجم و risk
+    },
     'stages': [
-        {  # 0.1R stage - Breakeven
-            'id': 'stage_0_1R_breakeven',
-            'trigger_R': 0.1,
-            'sl_lock_R': 0.0,           # انتقال SL به نقطه ورود (breakeven)
-            'tp_R': None                # TP تغییر نمی‌کند - همان TP اولیه باقی می‌ماند
+        {  # Commission Coverage Stage - محاسبه داینامیک در runtime
+            'id': 'stage_commission_coverage',
+            'trigger_R': 'auto',        # محاسبه خودکار بر اساس کمیسیون/risk + buffer
+            'sl_lock_R': 'auto',        # قفل SL روی همان نقطه trigger (بعد از کمیسیون)
+            'tp_R': None                # TP تغییر نمی‌کند - همان TP اولیه (2R) باقی می‌ماند
         },
         {  # 2.0R stage
             'id': 'stage_2_0R',

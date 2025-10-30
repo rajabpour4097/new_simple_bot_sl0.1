@@ -107,15 +107,46 @@ def main():
         risk = abs(pos.price_open - pos.sl) if pos.sl else None
         if not risk or risk == 0:
             return
+        
+        # محاسبه commission در R برای این پوزیشن
+        commission_R = 0.0
+        commission_cfg = DYNAMIC_RISK_CONFIG.get('commission_coverage_stage', {})
+        if commission_cfg.get('enable') and commission_cfg.get('auto_calculate'):
+            commission_per_lot = DYNAMIC_RISK_CONFIG.get('commission_per_lot', 4.5)
+            # محاسبه ارزش پولی 1R
+            symbol_info = mt5.symbol_info(MT5_CONFIG['symbol'])
+            if symbol_info:
+                # برای فارکس: 1 pip value = (contract_size * volume * tick_value) / price
+                # ریسک در pips
+                pip_size = symbol_info.point * (10.0 if symbol_info.digits in (3, 5) else 1.0)
+                risk_pips = risk / pip_size
+                
+                # ارزش هر pip
+                pip_value = symbol_info.trade_tick_value * 10.0 if symbol_info.digits in (3, 5) else symbol_info.trade_tick_value
+                
+                # ریسک پولی کل = risk_pips * pip_value * volume
+                risk_money = risk_pips * pip_value * pos.volume
+                
+                if risk_money > 0:
+                    # کمیسیون به نسبت R
+                    commission_R = commission_per_lot / risk_money
+                    buffer_R = commission_cfg.get('commission_buffer_R', 0.15)
+                    commission_R += buffer_R
+                    log(f'💵 Commission calc: commission=${commission_per_lot:.2f} / risk=${risk_money:.2f} = {commission_R:.4f}R (with buffer: {buffer_R:.3f}R)', color='yellow')
+        
         position_states[pos.ticket] = {
             'entry': pos.price_open,
             'risk': risk,
             'direction': 'buy' if pos.type == mt5.POSITION_TYPE_BUY else 'sell',
             'done_stages': set(),
             'base_tp_R': DYNAMIC_RISK_CONFIG.get('base_tp_R', 2),
-            'commission_locked': False
+            'commission_locked': False,
+            'commission_trigger_R': commission_R if commission_R > 0 else 0.1,  # fallback به 0.1R
+            'volume': pos.volume
         }
         # رویداد ثبت پوزیشن
+        commission_note = f"commission_trigger={commission_R:.3f}R" if commission_R > 0 else "no_commission_calc"
+        log(f'📋 Position registered: ticket={pos.ticket} | {commission_note} | volume={pos.volume}', color='cyan')
         try:
             log_position_event(
                 symbol=MT5_CONFIG['symbol'],
@@ -131,7 +162,7 @@ def main():
                 risk_abs=risk,
                 locked_R=None,
                 volume=pos.volume,
-                note='position registered'
+                note=f'position registered | {commission_note}'
             )
         except Exception:
             pass
@@ -180,8 +211,21 @@ def main():
 
                 # R-based stage
                 trigger_R = stage_cfg.get('trigger_R')
+                sl_lock_R = stage_cfg.get('sl_lock_R')
+                
+                # پردازش مقادیر 'auto' برای مرحله کمیسیون
+                if trigger_R == 'auto':
+                    trigger_R = st.get('commission_trigger_R', 0.1)
+                    sl_lock_R = trigger_R  # قفل SL روی همان نقطه trigger
+                
+                if sl_lock_R == 'auto':
+                    sl_lock_R = trigger_R if trigger_R != 'auto' else st.get('commission_trigger_R', 0.1)
+                
+                # اگر trigger_R هنوز string است، skip کن
+                if isinstance(trigger_R, str) or isinstance(sl_lock_R, str):
+                    continue
+                
                 if trigger_R is not None and profit_R >= trigger_R:
-                    sl_lock_R = stage_cfg.get('sl_lock_R', trigger_R)
                     tp_R = stage_cfg.get('tp_R')
                     # SL placement
                     if direction == 'buy':
@@ -216,7 +260,12 @@ def main():
                             st['done_stages'].add(sid)
                             modified_any = True
                             tp_msg = f'{new_tp_r}' if new_tp is not None else 'unchanged'
-                            log(f'⚙️ Dynamic Risk Stage {sid} applied: ticket={pos.ticket} | Profit: {profit_R:.2f}R | SL: {new_sl_r} | TP: {tp_msg}', color='cyan')
+                            
+                            # پیام ویژه برای مرحله کمیسیون
+                            if 'commission' in sid.lower():
+                                log(f'💰 Commission Coverage Applied: ticket={pos.ticket} | Profit: {profit_R:.3f}R | SL moved to: {new_sl_r} (after commission) | TP: {tp_msg}', color='green')
+                            else:
+                                log(f'⚙️ Dynamic Risk Stage {sid} applied: ticket={pos.ticket} | Profit: {profit_R:.2f}R | SL: {new_sl_r} | TP: {tp_msg}', color='cyan')
                             try:
                                 log_position_event(
                                     symbol=MT5_CONFIG['symbol'],
